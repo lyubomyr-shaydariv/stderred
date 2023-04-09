@@ -28,11 +28,13 @@
 
 
 const struct fdattr_t {
+  bool is_valid_env;
   char *begin;
   size_t begin_length;
   char *end;
   size_t end_length;
 } fdattr_t_DEFAULT = {
+  is_valid_env: false,
   begin: NULL,
   begin_length: 0,
   end: NULL,
@@ -40,8 +42,8 @@ const struct fdattr_t {
 };
 
 struct fdattr_t fdattr_slots[] = {
-  fdattr_t_DEFAULT, // 0
-  fdattr_t_DEFAULT, // 1
+  fdattr_t_DEFAULT, // 0 STDIN_FILENO
+  fdattr_t_DEFAULT, // 1 STDOUT_FILENO
   fdattr_t_DEFAULT, // 2 STDERR_FILENO
   fdattr_t_DEFAULT, // 3
   fdattr_t_DEFAULT, // 4
@@ -53,14 +55,14 @@ struct fdattr_t fdattr_slots[] = {
 };
 
 #define FDATTR_SLOTS_LENGTH (sizeof(fdattr_slots) / sizeof(0[fdattr_slots]))
+_Static_assert(FDATTR_SLOTS_LENGTH >= STDIN_FILENO, "must support stdin");
+_Static_assert(FDATTR_SLOTS_LENGTH >= STDOUT_FILENO, "must support stdout");
 _Static_assert(FDATTR_SLOTS_LENGTH >= STDERR_FILENO, "must support stderr");
 
-#define COLORIZE(fd) (is_valid_env && fd == STDERR_FILENO)
-bool is_valid_env = false;
+#define COLORIZE(fd) (fd < FDATTR_SLOTS_LENGTH && fdattr_slots[fd].is_valid_env)
 
 __attribute__((constructor, visibility ("hidden"))) void init() {
   if (!strcmp("bash", PROGRAM_NAME)) return;
-  if (!isatty(STDERR_FILENO)) return;
 
   char *blacklist;
   if ((blacklist = getenv("STDERRED_BLACKLIST"))) {
@@ -73,17 +75,51 @@ __attribute__((constructor, visibility ("hidden"))) void init() {
     regfree(&regex);
   }
 
-  is_valid_env = true;
-
-  char *STDERRED_ESC_CODE = getenv("STDERRED_ESC_CODE");
-  if (STDERRED_ESC_CODE == NULL) {
-    fdattr_slots[STDERR_FILENO].begin = "\x1b[31m";
-  } else {
-    fdattr_slots[STDERR_FILENO].begin = STDERRED_ESC_CODE;
+  {
+    for (size_t fd = 0; fd < FDATTR_SLOTS_LENGTH; fd++) {
+      fdattr_slots[fd].is_valid_env = false;
+      if (!isatty(fd)) {
+        continue;
+      }
+      char *begin = NULL;
+      if (fd < 1024) { // TODO number of files currently reported by `uname -a`
+        static char env_var[50];
+        snprintf(env_var, (sizeof(env_var) / sizeof(0[env_var])) - 1, "STDERRED_ESC_CODE_FD%ld", fd);
+        begin = getenv(env_var);
+      }
+      if (begin == NULL) {
+        switch (fd) {
+        case STDOUT_FILENO:
+          begin = getenv("STDERRED_ESC_CODE_STDOUT");
+          break;
+        case STDERR_FILENO:
+          begin = getenv("STDERRED_ESC_CODE_STDERR");
+          if (begin == NULL) {
+            begin = getenv("STDERRED_ESC_CODE");
+          }
+          break;
+        }
+      }
+      if (begin == NULL) {
+        switch (fd) {
+        case STDOUT_FILENO:
+          begin = "\x1b[32m";
+          break;
+        case STDERR_FILENO:
+          begin = "\x1b[31m";
+          break;
+        }
+      }
+      if (begin == NULL) {
+        continue;
+      }
+      fdattr_slots[fd].is_valid_env = true;
+      fdattr_slots[fd].begin = begin;
+      fdattr_slots[fd].begin_length = strlen(fdattr_slots[fd].begin);
+      fdattr_slots[fd].end = "\x1b[0m";
+      fdattr_slots[fd].end_length = strlen(fdattr_slots[fd].end);
+    }
   }
-  fdattr_slots[STDERR_FILENO].begin_length = strlen(fdattr_slots[STDERR_FILENO].begin);
-  fdattr_slots[STDERR_FILENO].end = "\x1b[0m";
-  fdattr_slots[STDERR_FILENO].end_length = strlen(fdattr_slots[STDERR_FILENO].end);
 }
 
 ssize_t FUNC(write)(int fd, const void* buf, size_t count) {
@@ -92,10 +128,10 @@ ssize_t FUNC(write)(int fd, const void* buf, size_t count) {
   GET_ORIGINAL(ssize_t, write, int, const void *, size_t);
 
   if (COLORIZE(fd)) {
-    ssize_t written = ORIGINAL(write)(fd, fdattr_slots[STDERR_FILENO].begin, fdattr_slots[STDERR_FILENO].begin_length);
+    ssize_t written = ORIGINAL(write)(fd, fdattr_slots[fd].begin, fdattr_slots[fd].begin_length);
     if (written <= 0) return written;
-    if (written < fdattr_slots[STDERR_FILENO].begin_length) {
-      ORIGINAL(write)(fd, fdattr_slots[STDERR_FILENO].end, fdattr_slots[STDERR_FILENO].end_length);
+    if (written < fdattr_slots[fd].begin_length) {
+      ORIGINAL(write)(fd, fdattr_slots[fd].end, fdattr_slots[fd].end_length);
       return 0;
     }
   }
@@ -103,7 +139,7 @@ ssize_t FUNC(write)(int fd, const void* buf, size_t count) {
   ssize_t written = ORIGINAL(write)(fd, buf, count);
 
   if (written > 0 && COLORIZE(fd)) {
-    ORIGINAL(write)(fd, fdattr_slots[STDERR_FILENO].end, fdattr_slots[STDERR_FILENO].end_length);
+    ORIGINAL(write)(fd, fdattr_slots[fd].end, fdattr_slots[fd].end_length);
   }
 
   return written;
@@ -118,13 +154,13 @@ size_t FUNC(fwrite_unlocked)(const void *data, size_t size, size_t count, FILE *
   GET_ORIGINAL(ssize_t, fwrite_unlocked, const void*, size_t, size_t, FILE *);
 
   if (COLORIZE(fd)) {
-    result = ORIGINAL(fwrite_unlocked)(fdattr_slots[STDERR_FILENO].begin, sizeof(char), fdattr_slots[STDERR_FILENO].begin_length, stream);
+    result = ORIGINAL(fwrite_unlocked)(fdattr_slots[fd].begin, sizeof(char), fdattr_slots[fd].begin_length, stream);
     if ((ssize_t)result < 0) return result;
   }
 
   result = ORIGINAL(fwrite_unlocked)(data, size, count, stream);
   if (result > 0 && COLORIZE(fd)) {
-    ORIGINAL(fwrite_unlocked)(fdattr_slots[STDERR_FILENO].end, sizeof(char), fdattr_slots[STDERR_FILENO].end_length, stream);
+    ORIGINAL(fwrite_unlocked)(fdattr_slots[fd].end, sizeof(char), fdattr_slots[fd].end_length, stream);
   }
 
   return result;
@@ -139,13 +175,13 @@ size_t FUNC(fwrite)(const void *data, size_t size, size_t count, FILE *stream) {
   GET_ORIGINAL(ssize_t, fwrite, const void*, size_t, size_t, FILE *);
 
   if (COLORIZE(fd)) {
-    result = ORIGINAL(fwrite)(fdattr_slots[STDERR_FILENO].begin, sizeof(char), fdattr_slots[STDERR_FILENO].begin_length, stream);
+    result = ORIGINAL(fwrite)(fdattr_slots[fd].begin, sizeof(char), fdattr_slots[fd].begin_length, stream);
     if ((ssize_t)result < 0) return result;
   }
 
   result = ORIGINAL(fwrite)(data, size, count, stream);
   if (result > 0 && COLORIZE(fd)) {
-    ORIGINAL(fwrite)(fdattr_slots[STDERR_FILENO].end, sizeof(char), fdattr_slots[STDERR_FILENO].end_length, stream);
+    ORIGINAL(fwrite)(fdattr_slots[fd].end, sizeof(char), fdattr_slots[fd].end_length, stream);
   }
 
   return result;
@@ -159,13 +195,13 @@ int FUNC(fputc)(int chr, FILE *stream) {
   GET_ORIGINAL(ssize_t, fwrite, const void*, size_t, size_t, FILE *);
 
   if (COLORIZE(fd)) {
-    result = ORIGINAL(fwrite)(fdattr_slots[STDERR_FILENO].begin, sizeof(char), fdattr_slots[STDERR_FILENO].begin_length, stream);
+    result = ORIGINAL(fwrite)(fdattr_slots[fd].begin, sizeof(char), fdattr_slots[fd].begin_length, stream);
     if ((ssize_t)result < 0) return result;
   }
 
   result = ORIGINAL(fputc)(chr, stream);
   if (COLORIZE(fd)) {
-    ORIGINAL(fwrite)(fdattr_slots[STDERR_FILENO].end, sizeof(char), fdattr_slots[STDERR_FILENO].end_length, stream);
+    ORIGINAL(fwrite)(fdattr_slots[fd].end, sizeof(char), fdattr_slots[fd].end_length, stream);
   }
 
   return result;
@@ -179,13 +215,13 @@ int FUNC(fputc_unlocked)(int chr, FILE *stream) {
   GET_ORIGINAL(ssize_t, fwrite, const void*, size_t, size_t, FILE *);
 
   if (COLORIZE(fd)) {
-    result = ORIGINAL(fwrite)(fdattr_slots[STDERR_FILENO].begin, sizeof(char), fdattr_slots[STDERR_FILENO].begin_length, stream);
+    result = ORIGINAL(fwrite)(fdattr_slots[fd].begin, sizeof(char), fdattr_slots[fd].begin_length, stream);
     if ((ssize_t)result < 0) return result;
   }
 
   result = ORIGINAL(fputc_unlocked)(chr, stream);
   if (COLORIZE(fd)) {
-    ORIGINAL(fwrite)(fdattr_slots[STDERR_FILENO].end, sizeof(char), fdattr_slots[STDERR_FILENO].end_length, stream);
+    ORIGINAL(fwrite)(fdattr_slots[fd].end, sizeof(char), fdattr_slots[fd].end_length, stream);
   }
 
   return result;
