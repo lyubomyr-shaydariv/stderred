@@ -131,6 +131,19 @@ Here's an example for bold red:
     red=$(tput setaf 1)
     export STDERRED_ESC_CODE=`echo -e "$bold$red"`
 
+Additionally, this is the list of supported environment variables:
+
+* `STDERRED_ESC_CODE_FD0`, `STDERRED_ESC_CODE_STDIN`
+* `STDERRED_ESC_CODE_FD1`, `STDERRED_ESC_CODE_STDOUT`
+* `STDERRED_ESC_CODE_FD2`, `STDERRED_ESC_CODE_STDERR`, `STDERRED_ESC_CODE`
+* `STDERRED_ESC_CODE_FD3`
+* `STDERRED_ESC_CODE_FD4`
+* `STDERRED_ESC_CODE_FD5`
+* `STDERRED_ESC_CODE_FD6`
+* `STDERRED_ESC_CODE_FD7`
+* `STDERRED_ESC_CODE_FD8`
+* `STDERRED_ESC_CODE_FD9`
+
 ### Program Blacklisting
 
 Some programs abuse stderr and print stuff on it even when they really
